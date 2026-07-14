@@ -15,9 +15,10 @@ OUTPUT="weston-rdp-${VERSION}.tar.gz"
 
 echo "[1/5] Installing dependencies..."
 
-sudo apt update
+sudo apt-get update
 
-sudo apt install -y \
+# Core build dependencies
+sudo apt-get install -y \
     build-essential \
     meson \
     ninja-build \
@@ -26,32 +27,53 @@ sudo apt install -y \
     git \
     tar \
     gzip \
-    \
     libwayland-dev \
     wayland-protocols \
-    \
     libxkbcommon-dev \
     libpixman-1-dev \
-    \
     libegl-dev \
     libgles-dev \
-    \
     libinput-dev \
     libevdev-dev \
-    \
     libdrm-dev \
-    \
     libjpeg-dev \
     libwebp-dev \
     libpng-dev \
-    \
     libpam0g-dev \
-    \
     libexpat1-dev \
-    \
-    freerdp3-dev \
-    \
-    python3
+    python3 || true
+
+# Try installing freerdp3-dev, if not available fallback to freerdp2-dev
+if apt-cache show freerdp3-dev >/dev/null 2>&1; then
+    echo "Installing freerdp3-dev..."
+    sudo apt-get install -y freerdp3-dev || true
+else
+    echo "freerdp3-dev not found, falling back to freerdp2-dev..."
+    sudo apt-get install -y freerdp2-dev || true
+fi
+
+# Additional RDP codec libraries
+sudo apt-get install -y \
+    libswscale-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswresample-dev \
+    liburiparser-dev \
+    libjson-c-dev \
+    libssl-dev \
+    libzstd-dev \
+    libdav1d-dev \
+    librsvg2-dev \
+    libcairo2-dev \
+    libopus-dev \
+    libspeex-dev \
+    libx264-dev \
+    libx265-dev \
+    libva-dev \
+    libvdpau-dev \
+    libxml2-dev \
+    libharfbuzz-dev || true
+
 
 
 ########################################

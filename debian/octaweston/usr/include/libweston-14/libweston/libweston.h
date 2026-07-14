@@ -1532,6 +1532,8 @@ struct weston_compositor {
 
 	bool view_list_needs_rebuild;
 
+	bool hide_cursor;
+
 	uint32_t state;
 	struct wl_event_source *idle_source;
 	uint32_t idle_inhibit;

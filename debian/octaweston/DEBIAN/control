@@ -3,7 +3,10 @@ Version: 14.0.0-1
 Architecture: amd64
 Maintainer: Yohanes Oktanio <yohanesoktayt72@gmail.com>
 Installed-Size: 2062
-Depends: libc6 (>= 2.34)
+Depends: libc6 (>= 2.34), libwayland-server0, libpixman-1-0, libxkbcommon0, libfreerdp3-3, libfreerdp-server3-3, libwinpr3-3, libdrm2
+Replaces: libweston-14-0, weston
+Conflicts: libweston-14-0, weston
+Provides: libweston-14-0, weston
 Section: graphics
 Priority: optional
 Description: Weston compositor optimized for WSL Android Emulator
