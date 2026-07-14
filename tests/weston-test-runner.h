@@ -29,6 +29,7 @@
 
 #include "config.h"
 
+#include <semaphore.h>
 #include <stdlib.h>
 
 #include <wayland-util.h>
@@ -39,6 +40,12 @@
 #ifdef NDEBUG
 #error "Tests must not be built with NDEBUG defined, they rely on assert()."
 #endif
+
+/** Test harness context
+ *
+ * \ingroup testharness
+ */
+struct weston_test_harness;
 
 /** Test program entry
  *
@@ -51,17 +58,20 @@
  */
 struct weston_test_entry {
 	const char *name;
-	void (*run)(void *);
+	void (*run)(struct wet_testsuite_data *, void *);
 	const void *table_data;
 	size_t element_size;
 	int n_elements;
-} __attribute__ ((aligned (32)));
+} __attribute__ ((aligned (64)));
 
 #define TEST_BEGIN(name, arg)						\
-	static void name(arg)
+	static void name(struct wet_testsuite_data *_wet_suite_data, arg)
+
+#define TEST_BEGIN_NO_ARG(name)						\
+	static void name(struct wet_testsuite_data *_wet_suite_data)
 
 #define TEST_COMMON(func, name, data, size, n_elem)			\
-	static void func(void *);					\
+	static void func(struct wet_testsuite_data *, void *);		\
 									\
 	const struct weston_test_entry test##name			\
 		__attribute__ ((used, section ("test_section"))) =	\
@@ -71,14 +81,15 @@ struct weston_test_entry {
 
 #define NO_ARG_TEST(name)						\
 	TEST_COMMON(wrap##name, name, NULL, 0, 1)			\
-	static void name(void);						\
-	static void wrap##name(void *data)				\
+	static void name(struct wet_testsuite_data *);			\
+	static void wrap##name(struct wet_testsuite_data *_wet_suite_data,\
+			       void *data)				\
 	{								\
 		(void) data;						\
-		name();							\
+		name(_wet_suite_data);					\
 	}								\
 									\
-	TEST_BEGIN(name, void)
+	TEST_BEGIN_NO_ARG(name)
 
 #define ARG_TEST(name, test_data)					\
 	TEST_COMMON(name, name, test_data,				\
@@ -128,14 +139,26 @@ struct weston_test_entry {
  *
  * \ingroup testharness
  */
-#define PLUGIN_TEST(name) 						\
+#define PLUGIN_TEST(name)						\
 	TEST_COMMON(wrap##name, name, NULL, 0, 1)			\
-	static void name(struct weston_compositor *);			\
-	static void wrap##name(void *compositor)			\
+	static void name(struct wet_testsuite_data *,			\
+			 struct weston_compositor *);			\
+	static void wrap##name(struct wet_testsuite_data *_wet_suite_data,\
+			       void *compositor)			\
 	{								\
-		name(compositor);					\
+		name(_wet_suite_data, compositor);			\
 	}								\
 	TEST_BEGIN(name, struct weston_compositor *compositor)
+
+/** Get test suite data structure
+ *
+ * This returns the shared test suite data structure, to be used in
+ * any test which is declared with TEST(), TEST_P(), or PLUGIN_TEST().
+ *
+ * \return Test suite data structure
+ * \ingroup testharness
+ */
+#define TEST_GET_SUITE_DATA() _wet_suite_data
 
 void
 testlog(const char *fmt, ...) WL_PRINTF(1, 2);
@@ -145,6 +168,23 @@ get_test_name(void);
 
 int
 get_test_fixture_index(void);
+
+int
+get_test_fixture_number_from_harness(struct weston_test_harness *harness);
+
+/** Metadata for fixture setup array elements
+ *
+ * Every type used as a fixture setup array's elements needs one member of
+ * this type, initialized.
+ *
+ * \sa DECLARE_FIXTURE_SETUP_WITH_ARG()
+ *
+ * \ingroup testharness
+ */
+struct fixture_metadata {
+	/** Human friendly name of the fixture setup */
+	const char *name;
+};
 
 /** Fixture setup array record
  *
@@ -157,16 +197,11 @@ struct fixture_setup_array {
 	const void *array;
 	size_t element_size;
 	int n_elements;
+	size_t meta_offset;
 };
 
 const struct fixture_setup_array *
 fixture_setup_array_get_(void);
-
-/** Test harness context
- *
- * \ingroup testharness
- */
-struct weston_test_harness;
 
 enum test_result_code
 fixture_setup_run_(struct weston_test_harness *harness, const void *arg_);
@@ -222,18 +257,21 @@ fixture_setup_run_(struct weston_test_harness *harness, const void *arg_);
  *
  * \param func_ The function to be used as fixture setup.
  * \param array_ A static const array of arbitrary type.
+ * \param meta_ Name of the field with type struct fixture_metadata.
  *
  * \ingroup testharness
  */
-#define DECLARE_FIXTURE_SETUP_WITH_ARG(func_, array_)			\
+#define DECLARE_FIXTURE_SETUP_WITH_ARG(func_, array_, meta_)		\
 	const struct fixture_setup_array *				\
 	fixture_setup_array_get_(void)					\
 	{								\
 		static const struct fixture_setup_array arr = {		\
 			.array = array_,				\
 			.element_size = sizeof(array_[0]),		\
-			.n_elements = ARRAY_LENGTH(array_)		\
-		};							\
+			.n_elements = ARRAY_LENGTH(array_),		\
+			.meta_offset = offsetof(typeof(array_[0]), meta_),	\
+		};								\
+		TYPEVERIFY(const struct fixture_metadata *, &array_[0].meta_);	\
 		return &arr;						\
 	}								\
 									\

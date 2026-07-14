@@ -36,6 +36,9 @@ fixture_setup(struct weston_test_harness *harness)
 
 	compositor_setup_defaults(&setup);
 
+	setup.shell = SHELL_TEST_DESKTOP;
+	setup.refresh = HIGHEST_OUTPUT_REFRESH;
+
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
 DECLARE_FIXTURE_SETUP(fixture_setup);
@@ -106,6 +109,8 @@ TEST(seat_capabilities_test)
 	assert(cl->input->pointer);
 	assert(cl->input->keyboard);
 	assert(cl->input->touch);
+
+	client_destroy(cl);
 }
 
 #define COUNT 15
@@ -144,9 +149,12 @@ TEST(multiple_device_add_and_remove)
 	assert(cl->input->pointer);
 	assert(cl->input->keyboard);
 	assert(cl->input->touch);
+
+	client_destroy(cl);
 }
 
-TEST(device_release_before_destroy)
+static void
+device_release_before_destroy(void)
 {
 	struct client *cl = create_client_and_test_surface(100, 100, 100, 100);
 
@@ -181,27 +189,20 @@ TEST(device_release_before_destroy)
 	client_roundtrip(cl);
 
 	assert(cl->input->caps == WL_SEAT_CAPABILITY_ALL);
+
+	client_destroy(cl);
 }
 
 TEST(device_release_before_destroy_multiple)
 {
 	int i;
 
-	/* if weston crashed during this test, then there is
-	 * some inconsistency */
-	for (i = 0; i < 30; ++i) {
-		/* Fifty times run the previous test. This will create
-		 * fifty clients, because we don't have any
-		 * way how to destroy them (worth of adding!). Only one
-		 * client will run at a time though and so should have no
-		 * effect on the result of the test (after the client
-		 * finishes its body, it just 'is' and does nothing). */
+	for (i = 0; i < 30; ++i)
 		device_release_before_destroy();
-	}
 }
 
-/* normal work-flow test */
-TEST(device_release_after_destroy)
+static void
+device_release_after_destroy(void)
 {
 	struct client *cl = create_client_and_test_surface(100, 100, 100, 100);
 
@@ -237,23 +238,23 @@ TEST(device_release_after_destroy)
 	client_roundtrip(cl);
 
 	assert(cl->input->caps == WL_SEAT_CAPABILITY_ALL);
+
+	client_destroy(cl);
 }
 
 TEST(device_release_after_destroy_multiple)
 {
 	int i;
 
-	/* if weston crashed during this test, then there is
-	 * some inconsistency */
-	for (i = 0; i < 30; ++i) {
+	for (i = 0; i < 30; ++i)
 		device_release_after_destroy();
-	}
 }
 
 /* see https://bugzilla.gnome.org/show_bug.cgi?id=745008
  * It is a mutter bug, but highly relevant. Weston does not
  * suffer from this bug atm, but it is worth of testing. */
-TEST(get_device_after_destroy)
+static void
+get_device_after_destroy(void)
 {
 	struct client *cl = create_client_and_test_surface(100, 100, 100, 100);
 	struct wl_pointer *wl_pointer;
@@ -310,6 +311,8 @@ TEST(get_device_after_destroy)
 	client_roundtrip(cl);
 
 	assert(cl->input->caps == WL_SEAT_CAPABILITY_ALL);
+
+	client_destroy(cl);
 }
 
 TEST(get_device_after_destroy_multiple)
@@ -331,6 +334,8 @@ TEST(seats_have_names)
 	wl_list_for_each(input, &cl->inputs, link) {
 		assert(input->seat_name);
 	}
+
+	client_destroy(cl);
 }
 
 TEST(seat_destroy_and_recreate)
@@ -353,4 +358,6 @@ TEST(seat_destroy_and_recreate)
 	assert(cl->input->pointer);
 	assert(cl->input->keyboard);
 	assert(cl->input->touch);
+
+	client_destroy(cl);
 }

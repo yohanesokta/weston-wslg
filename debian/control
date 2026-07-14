@@ -1,0 +1,17 @@
+Source: octaweston
+Section: graphics
+Priority: optional
+Maintainer: Yohanes Oktanio <yohanesoktayt72@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ meson,
+ ninja-build,
+ pkg-config,
+ dpkg-dev
+Standards-Version: 4.7.0
+
+Package: octaweston
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Weston compositor optimized for WSL Android Emulator
+ Minimal Weston build with RDP backend for Android emulator usage.

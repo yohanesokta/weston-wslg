@@ -37,10 +37,15 @@ extern "C" {
 struct weston_compositor;
 struct weston_xwayland;
 
-#define WESTON_XWAYLAND_API_NAME "weston_xwayland_v1"
-#define WESTON_XWAYLAND_SURFACE_API_NAME "weston_xwayland_surface_v1"
+#define WESTON_XWAYLAND_API_NAME "weston_xwayland_v3"
+#define WESTON_XWAYLAND_SURFACE_API_NAME "weston_xwayland_surface_v2"
 
-typedef pid_t
+enum window_atom_type {
+	WM_NAME,
+	WM_CLASS,
+};
+
+typedef struct wl_client *
 (*weston_xwayland_spawn_xserver_func_t)(
 	void *user_data, const char *display, int abstract_fd, int unix_fd);
 
@@ -83,19 +88,16 @@ struct weston_xwayland_api {
 	/** Notify the Xwayland module that the Xwayland server is loaded.
 	 *
 	 * After the Xwayland server process has been spawned it will notify
-	 * the parent that is has finished the initialization by sending a
-	 * SIGUSR1 signal.
-	 * The caller should listen for that signal and call this function
+	 * the parent that it has finished the initialization by writing to
+	 * the displayfd passed.
+	 * The caller should listen for that write and call this function
 	 * when it is received.
 	 *
 	 * \param xwayland The Xwayland context object.
-	 * \param client The wl_client object representing the connection of
-	 *               the Xwayland server process.
 	 * \param wm_fd The file descriptor for the wm.
 	 */
 	void
-	(*xserver_loaded)(struct weston_xwayland *xwayland,
-			  struct wl_client *client, int wm_fd);
+	(*xserver_loaded)(struct weston_xwayland *xwayland, int wm_fd);
 
 	/** Notify the Xwayland module that the Xwayland server has exited.
 	 *
@@ -105,10 +107,9 @@ struct weston_xwayland_api {
 	 * socket, and may call the spawn function again.
 	 *
 	 * \param xwayland The Xwayland context object.
-	 * \param exit_status The exit status of the Xwayland server process.
 	 */
 	void
-	(*xserver_exited)(struct weston_xwayland *xwayland, int exit_status);
+	(*xserver_exited)(struct weston_xwayland *xwayland);
 };
 
 /** Retrieve the API object for the libweston Xwayland module.
@@ -150,33 +151,16 @@ struct weston_xwayland_surface_api {
 	 */
 	void
 	(*send_position)(struct weston_surface *surface, int32_t x, int32_t y);
-	/** Notify the Xwayland surface maximized state has changed.
+
+	/** Grab the window's name using enume window_atom_type
+	 *
 	 *
 	 * \param surface The Xwayland surface.
-	 * \param is_maximized New maximized state for the surface.
+	 * \param atype the type of the atom, either WM_NAME or WM_CLASS
+	 * \returns the net_wm_name, as a string.
 	 */
-	void
-	(*set_maximized)(struct weston_surface *surface, bool is_maximized);
-	/** Obtain X window class name associated to the surface.
-	 *
-	 * \param surface The Xwayland surface.
-	 */
-	char *
-	(*get_class_name)(struct weston_surface *surface);
-	/** Trigger callback to weston_desktop_api.set_window_icon with icon image from X.
-	 *
-	 * \param surface The Xwayland surface.
-	 */
-	bool
-	(*trigger_set_window_icon)(struct weston_surface *surface);
-	/** Send request to app to close the window.
-	 *  (application may react to the request and it may ignore
-	 *   or may prompt an confirmation UI, such as "Save" dialog).
-	 *
-	 * \param surface The Xwayland surface.
-	 */
-	void
-	(*close_window)(struct weston_surface *surface);
+	const char *
+	(*get_xwayland_window_name)(struct weston_surface *surface, enum window_atom_type atype);
 };
 
 /** Retrieve the API object for the libweston Xwayland surface.

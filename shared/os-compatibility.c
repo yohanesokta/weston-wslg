@@ -40,10 +40,30 @@
 
 #define READONLY_SEALS (F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE)
 
+/* Fallback to no flag when missing the definition */
+#ifndef MFD_NOEXEC_SEAL
+#define MFD_NOEXEC_SEAL 0
+#endif
+
+int
+os_fd_clear_cloexec(int fd)
+{
+	int flags;
+
+	flags = fcntl(fd, F_GETFD);
+	if (flags == -1)
+		return -1;
+
+	if (fcntl(fd, F_SETFD, flags & ~(int)FD_CLOEXEC) == -1)
+		return -1;
+
+	return 0;
+}
+
 int
 os_fd_set_cloexec(int fd)
 {
-	long flags;
+	int flags;
 
 	if (fd == -1)
 		return -1;
@@ -169,7 +189,21 @@ os_create_anonymous_file(off_t size)
 	int ret;
 
 #ifdef HAVE_MEMFD_CREATE
-	fd = memfd_create("weston-shared", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	/*
+	* Linux kernels older than 6.3 reject MFD_NOEXEC_SEAL with EINVAL.
+	* Try first *with* it, and if that fails, try again *without* it.
+	*/
+	errno = 0;
+	fd = memfd_create(
+		"weston-shared",
+		MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL);
+
+	if (fd < 0 && errno == EINVAL && MFD_NOEXEC_SEAL != 0) {
+		fd = memfd_create(
+			"weston-shared",
+			MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	}
+
 	if (fd >= 0) {
 		/* We can add this seal before calling posix_fallocate(), as
 		 * the file is currently zero-sized anyway.
@@ -327,7 +361,7 @@ os_ro_anonymous_file_size(struct ro_anonymous_file *file)
  * The returned file descriptor must not be shared between multiple clients.
  * When \p mapmode is RO_ANONYMOUS_FILE_MAPMODE_PRIVATE the file descriptor is
  * only guaranteed to be mmapable with \c MAP_PRIVATE, when \p mapmode is
- * RO_ANONYMOUS_FILE_MAPMODE_SHARED the file descriptor can be mmaped with
+ * RO_ANONYMOUS_FILE_MAPMODE_SHARED the file descriptor can be mmapped with
  * either MAP_PRIVATE or MAP_SHARED.
  * When you're done with the fd you must call \c os_ro_anonymous_file_put_fd
  * instead of calling \c close.

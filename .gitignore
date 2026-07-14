@@ -7,6 +7,7 @@
 ctags
 cscope.out
 TAGS
-
+*tar.gz
 00*.patch
-build/*
+subprojects
+build/

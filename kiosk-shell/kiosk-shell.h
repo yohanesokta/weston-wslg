@@ -24,8 +24,9 @@
 #ifndef WESTON_KIOSK_SHELL_H
 #define WESTON_KIOSK_SHELL_H
 
-#include <libweston-desktop/libweston-desktop.h>
+#include <libweston/desktop.h>
 #include <libweston/libweston.h>
+#include <libweston/config-parser.h>
 
 struct kiosk_shell {
 	struct weston_compositor *compositor;
@@ -36,11 +37,18 @@ struct kiosk_shell {
 	struct wl_listener output_resized_listener;
 	struct wl_listener output_moved_listener;
 	struct wl_listener seat_created_listener;
+	struct wl_listener transform_listener;
 
 	struct weston_layer background_layer;
 	struct weston_layer normal_layer;
+	struct weston_layer inactive_layer;
 
 	struct wl_list output_list;
+	struct wl_list seat_list;
+
+	const struct weston_xwayland_surface_api *xwayland_surface_api;
+	struct weston_config *config;
+	struct wl_listener session_listener;
 };
 
 struct kiosk_shell_surface {
@@ -53,8 +61,13 @@ struct kiosk_shell_surface {
 	struct wl_listener output_destroy_listener;
 
 	struct wl_signal destroy_signal;
+
+	struct wl_signal parent_destroy_signal;
 	struct wl_listener parent_destroy_listener;
 	struct kiosk_shell_surface *parent;
+
+	struct wl_list surface_tree_list;
+	struct wl_list surface_tree_link;
 
 	int focus_count;
 
@@ -63,9 +76,10 @@ struct kiosk_shell_surface {
 
 	struct {
 		bool is_set;
-		int32_t x;
-		int32_t y;
+		struct weston_coord_global pos;
 	} xwayland;
+
+	bool appid_output_assigned;
 };
 
 struct kiosk_shell_seat {
@@ -73,19 +87,22 @@ struct kiosk_shell_seat {
 	struct wl_listener seat_destroy_listener;
 	struct weston_surface *focused_surface;
 
-	struct wl_listener caps_changed_listener;
-	struct wl_listener keyboard_focus_listener;
+	struct wl_list link;	/** kiosk_shell::seat_list */
 };
 
 struct kiosk_shell_output {
 	struct weston_output *output;
 	struct wl_listener output_destroy_listener;
-	struct weston_view *background_view;
+	struct weston_curtain *curtain;
 
 	struct kiosk_shell *shell;
 	struct wl_list link;
 
 	char *app_ids;
+	char *x11_wm_name_app_ids;
+	char *x11_wm_class_app_ids;
+
+	struct wl_list *active_surface_tree;
 };
 
 #endif /* WESTON_KIOSK_SHELL_H */

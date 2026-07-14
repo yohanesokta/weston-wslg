@@ -28,7 +28,6 @@
 #include <assert.h>
 
 #include <libweston/libweston.h>
-#include "compositor/weston.h"
 #include <libweston/plugin-registry.h>
 
 #include "weston-test-runner.h"
@@ -40,6 +39,7 @@ fixture_setup(struct weston_test_harness *harness)
 	struct compositor_setup setup;
 
 	compositor_setup_defaults(&setup);
+	setup.shell = SHELL_TEST_DESKTOP;
 
 	return weston_test_harness_execute_as_plugin(harness, &setup);
 }

@@ -33,14 +33,14 @@
 #include <libweston/weston-log.h>
 #include <wayland-server-core.h>
 
+#include "shared/helpers.h"
+
 enum timeline_type {
 	TLT_END = 0,
 	TLT_OUTPUT,
 	TLT_SURFACE,
 	TLT_VBLANK,
 	TLT_GPU,
-	TLT_MSEC,
-	TLT_PRESENT,
 };
 
 /** Timeline subscription created for each subscription
@@ -69,11 +69,6 @@ struct weston_timeline_subscription_object {
 	struct wl_listener destroy_listener;
 };
 
-#define TYPEVERIFY(type, arg) ({		\
-	typeof(arg) tmp___ = (arg);		\
-	(void)((type)0 == tmp___);		\
-	tmp___; })
-
 /**
  * Should be used as the last argument when using TL_POINT macro
  *
@@ -85,8 +80,6 @@ struct weston_timeline_subscription_object {
 #define TLP_SURFACE(s) TLT_SURFACE, TYPEVERIFY(struct weston_surface *, (s))
 #define TLP_VBLANK(t) TLT_VBLANK, TYPEVERIFY(const struct timespec *, (t))
 #define TLP_GPU(t) TLT_GPU, TYPEVERIFY(const struct timespec *, (t))
-#define TLP_MSEC(i) TLT_MSEC, TYPEVERIFY(const int64_t *, (i))
-#define TLP_NEXT_PRESENT(t) TLT_PRESENT, TYPEVERIFY(const struct timespec *, (t))
 
 /** This macro is used to add timeline points.
  *

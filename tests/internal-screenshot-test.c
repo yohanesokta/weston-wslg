@@ -30,6 +30,7 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "image-iter.h"
 #include "test-config.h"
 
 static enum test_result_code
@@ -38,11 +39,16 @@ fixture_setup(struct weston_test_harness *harness)
 	struct compositor_setup setup;
 
 	compositor_setup_defaults(&setup);
-	setup.renderer = RENDERER_PIXMAN;
+	setup.renderer = WESTON_RENDERER_PIXMAN;
 	setup.width = 320;
 	setup.height = 240;
 	setup.shell = SHELL_DESKTOP;
-	setup.config_file = TESTSUITE_INTERNAL_SCREENSHOT_CONFIG_PATH;
+	setup.refresh = HIGHEST_OUTPUT_REFRESH;
+
+	weston_ini_setup (&setup,
+			  cfgln("[shell]"),
+			  cfgln("startup-animation=%s", "none"),
+			  cfgln("background-color=%s", "0xCC336699"));
 
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
@@ -51,30 +57,20 @@ DECLARE_FIXTURE_SETUP(fixture_setup);
 static void
 draw_stuff(pixman_image_t *image)
 {
-	int w, h;
-	int stride; /* bytes */
+	struct image_header ih = image_header_from(image);
 	int x, y;
 	uint32_t r, g, b;
-	uint32_t *pixels;
-	uint32_t *pixel;
-	pixman_format_code_t fmt;
 
-	fmt = pixman_image_get_format(image);
-	w = pixman_image_get_width(image);
-	h = pixman_image_get_height(image);
-	stride = pixman_image_get_stride(image);
-	pixels = pixman_image_get_data(image);
+	for (y = 0; y < ih.height; y++) {
+		uint32_t *pixel = image_header_get_row_u32(&ih, y);
 
-	assert(PIXMAN_FORMAT_BPP(fmt) == 32);
-
-	for (x = 0; x < w; x++)
-		for (y = 0; y < h; y++) {
+		for (x = 0; x < ih.width; x++, pixel++) {
 			b = x;
 			g = x + y;
 			r = y;
-			pixel = pixels + (y * stride / 4) + x;
 			*pixel = (255U << 24) | (r << 16) | (g << 8) | b;
 		}
+	}
 }
 
 TEST(internal_screenshot)
@@ -87,7 +83,7 @@ TEST(internal_screenshot)
 	pixman_image_t *reference_bad = NULL;
 	pixman_image_t *diffimg;
 	struct rectangle clip;
-	const char *fname;
+	char *fname;
 	bool match = false;
 	bool dump_all_images = true;
 
@@ -123,7 +119,7 @@ TEST(internal_screenshot)
 
 	/* Take a snapshot.  Result will be in screenshot->wl_buffer. */
 	testlog("Taking a screenshot\n");
-	screenshot = capture_screenshot_of_output(client);
+	screenshot = capture_screenshot_of_output(client, NULL);
 	assert(screenshot);
 
 	/* Load good reference image */
@@ -131,12 +127,14 @@ TEST(internal_screenshot)
 	testlog("Loading good reference image %s\n", fname);
 	reference_good = load_image_from_png(fname);
 	assert(reference_good);
+	free(fname);
 
 	/* Load bad reference image */
 	fname = screenshot_reference_filename("internal-screenshot-bad", 0);
 	testlog("Loading bad reference image %s\n", fname);
 	reference_bad = load_image_from_png(fname);
 	assert(reference_bad);
+	free(fname);
 
 	/* Test check_images_match() without a clip.
 	 * We expect this to fail since we use a bad reference image
@@ -159,20 +157,25 @@ TEST(internal_screenshot)
 	testlog("Screenshot %s reference image in clipped area\n", match? "matches" : "doesn't match");
 	if (!match) {
 		diffimg = visualize_image_difference(screenshot->image, reference_good, &clip, NULL);
-		fname = screenshot_output_filename("internal-screenshot-error", 0);
+		fname = output_filename_for_test_case("error", 0, "png");
 		write_image_as_png(diffimg, fname);
 		pixman_image_unref(diffimg);
+		free(fname);
 	}
 	pixman_image_unref(reference_good);
 
 	/* Test dumping of non-matching images */
 	if (!match || dump_all_images) {
-		fname = screenshot_output_filename("internal-screenshot", 0);
+		fname = output_filename_for_test_case(NULL, 0, "png");
 		write_image_as_png(screenshot->image, fname);
+		free(fname);
 	}
 
 	buffer_destroy(screenshot);
 
 	testlog("Test complete\n");
 	assert(match);
+
+	buffer_destroy(buf);
+	client_destroy(client);
 }

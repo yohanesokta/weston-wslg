@@ -60,6 +60,8 @@ struct virtual_keyboard {
 	uint32_t surrounding_cursor;
 	struct keyboard *keyboard;
 	bool toplevel;
+	bool overlay;
+	struct zwp_input_panel_surface_v1 *ips;
 };
 
 enum key_type {
@@ -375,7 +377,7 @@ redraw_handler(struct widget *widget, void *data)
 	cairo_rectangle(cr, allocation.x, allocation.y, allocation.width, allocation.height);
 	cairo_clip(cr);
 
-	cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+	cairo_select_font_face(cr, "sans-serif", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
 	cairo_set_font_size(cr, 16);
 
 	cairo_translate(cr, allocation.x, allocation.y);
@@ -504,7 +506,7 @@ delete_before_cursor(struct virtual_keyboard *keyboard)
 	end = keyboard->surrounding_text + keyboard->surrounding_cursor;
 
 	zwp_input_method_context_v1_delete_surrounding_text(keyboard->context,
-							    (start - keyboard->surrounding_text) - keyboard->surrounding_cursor,
+							    start - keyboard->surrounding_text,
 							    end - start);
 	zwp_input_method_context_v1_commit_string(keyboard->context,
 						  keyboard->serial,
@@ -958,25 +960,33 @@ global_handler(struct display *display, uint32_t name,
 static void
 set_toplevel(struct output *output, struct virtual_keyboard *virtual_keyboard)
 {
-	struct zwp_input_panel_surface_v1 *ips;
-	struct keyboard *keyboard = virtual_keyboard->keyboard;
-
-	ips = zwp_input_panel_v1_get_input_panel_surface(virtual_keyboard->input_panel,
-							 window_get_wl_surface(keyboard->window));
-
-	zwp_input_panel_surface_v1_set_toplevel(ips,
+	zwp_input_panel_surface_v1_set_toplevel(virtual_keyboard->ips,
 						output_get_wl_output(output),
 						ZWP_INPUT_PANEL_SURFACE_V1_POSITION_CENTER_BOTTOM);
-
 	virtual_keyboard->toplevel = true;
+	virtual_keyboard->overlay = false;
+}
+
+static void
+set_overlay(struct output *output, struct virtual_keyboard *virtual_keyboard)
+{
+	zwp_input_panel_surface_v1_set_overlay_panel(virtual_keyboard->ips);
+	virtual_keyboard->toplevel = false;
+	virtual_keyboard->overlay = true;
 }
 
 static void
 display_output_handler(struct output *output, void *data) {
 	struct virtual_keyboard *keyboard = data;
+	const char *type = getenv("WESTON_KEYBOARD_SURFACE_TYPE");
 
-	if (!keyboard->toplevel)
-		set_toplevel(output, keyboard);
+	if (type && strcasecmp("overlay", type) == 0) {
+		if (!keyboard->overlay)
+			set_overlay(output, keyboard);
+	} else {
+		if (!keyboard->toplevel)
+			set_toplevel(output, keyboard);
+	}
 }
 
 static void
@@ -992,9 +1002,14 @@ keyboard_create(struct virtual_keyboard *virtual_keyboard)
 	keyboard->window = window_create_custom(virtual_keyboard->display);
 	keyboard->widget = window_add_widget(keyboard->window, keyboard);
 
+	virtual_keyboard->ips =
+		zwp_input_panel_v1_get_input_panel_surface(virtual_keyboard->input_panel,
+							   window_get_wl_surface(keyboard->window));
 	virtual_keyboard->keyboard = keyboard;
 
 	window_set_title(keyboard->window, "Virtual keyboard");
+	window_set_appid(keyboard->window,
+			 "org.freedesktop.weston.virtual-keyboard");
 	window_set_user_data(keyboard->window, keyboard);
 
 	widget_set_redraw_handler(keyboard->widget, redraw_handler);
@@ -1009,6 +1024,23 @@ keyboard_create(struct virtual_keyboard *virtual_keyboard)
 
 	display_set_output_configure_handler(virtual_keyboard->display,
 					     display_output_handler);
+}
+
+static void
+keyboard_destroy(struct virtual_keyboard *virtual_keyboard)
+{
+	if (virtual_keyboard->ips)
+		zwp_input_panel_surface_v1_destroy(virtual_keyboard->ips);
+
+	if (virtual_keyboard->input_panel)
+		zwp_input_panel_v1_destroy(virtual_keyboard->input_panel);
+
+	if (virtual_keyboard->input_method)
+		zwp_input_method_v1_destroy(virtual_keyboard->input_method);
+
+	widget_destroy(virtual_keyboard->keyboard->widget);
+	window_destroy(virtual_keyboard->keyboard->window);
+	free(virtual_keyboard->keyboard);
 }
 
 int
@@ -1036,6 +1068,9 @@ main(int argc, char *argv[])
 	keyboard_create(&virtual_keyboard);
 
 	display_run(virtual_keyboard.display);
+
+	keyboard_destroy(&virtual_keyboard);
+	display_destroy(virtual_keyboard.display);
 
 	return 0;
 }

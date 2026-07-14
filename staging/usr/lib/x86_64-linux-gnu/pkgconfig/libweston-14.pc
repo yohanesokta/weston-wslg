@@ -1,0 +1,10 @@
+prefix=/usr
+includedir=${prefix}/include
+libdir=${prefix}/lib/x86_64-linux-gnu
+
+Name: libweston API
+Description: Header files for libweston compositors development
+Version: 14.0.0
+Requires.private: wayland-server >=  1.22.0, pixman-1 >=  0.25.2, xkbcommon >=  0.3.0
+Libs: -L${libdir} -lweston-14
+Cflags: -I${includedir}/libweston-14

@@ -33,12 +33,25 @@
 #include "weston-test-fixture-compositor.h"
 
 #define TRANSFORM(x) WL_OUTPUT_TRANSFORM_ ## x, #x
-#define RENDERERS(s, t) \
-	{ RENDERER_PIXMAN, s, TRANSFORM(t) }, \
-	{ RENDERER_GL,     s, TRANSFORM(t) }
+#define RENDERERS(s, t)							\
+	{								\
+		.renderer = WESTON_RENDERER_PIXMAN,			\
+		.scale = s,						\
+		.transform = WL_OUTPUT_TRANSFORM_ ## t,			\
+		.transform_name = #t,					\
+		.meta.name = "pixman " #s " " #t,			\
+	},								\
+	{								\
+		.renderer = WESTON_RENDERER_GL,				\
+		.scale = s,						\
+		.transform = WL_OUTPUT_TRANSFORM_ ## t,			\
+		.transform_name = #t,					\
+		.meta.name = "GL " #s " " #t,				\
+	}
 
 struct setup_args {
-	enum renderer_type renderer;
+	struct fixture_metadata meta;
+	enum weston_renderer_type renderer;
 	int scale;
 	enum wl_output_transform transform;
 	const char *transform_name;
@@ -70,7 +83,7 @@ fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
-DECLARE_FIXTURE_SETUP_WITH_ARG(fixture_setup, my_setup_args);
+DECLARE_FIXTURE_SETUP_WITH_ARG(fixture_setup, my_setup_args, meta);
 
 struct buffer_args {
 	int scale;
@@ -130,8 +143,9 @@ TEST_P(buffer_transform, my_buffer_args)
 					bargs->transform);
 	move_client(client, 19, 19);
 
-	match = verify_screen_content(client, refname, 0, NULL, 0);
+	match = verify_screen_content(client, refname, 0, NULL, 0, NULL);
 	assert(match);
 
 	client_destroy(client);
+	free(refname);
 }

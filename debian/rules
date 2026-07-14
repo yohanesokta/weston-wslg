@@ -1,0 +1,48 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	meson setup build \
+	    --prefix=/usr \
+	    --buildtype=release \
+	    --default-library=static \
+	    --strip \
+	    \
+	    -Dbackend-default=rdp \
+	    \
+	    -Dbackend-rdp=true \
+	    -Dbackend-drm=false \
+	    -Dbackend-wayland=false \
+	    -Dbackend-x11=false \
+	    -Dbackend-headless=false \
+	    -Dbackend-pipewire=false \
+	    \
+	    -Drenderer-gl=true \
+	    \
+	    -Dxwayland=false \
+	    \
+	    -Dshell-desktop=true \
+	    -Dshell-ivi=false \
+	    -Dshell-kiosk=false \
+	    \
+	    -Dpipewire=false \
+	    -Dremoting=false \
+	    \
+	    -Dsystemd=false \
+	    -Dcolor-management-lcms=false \
+	    \
+	    -Ddemo-clients=false \
+	    -Dsimple-clients=[] \
+	    -Dtools=[] \
+	    \
+	    -Dtests=false \
+	    -Ddoc=false
+
+override_dh_auto_build:
+	meson compile -C build
+
+override_dh_auto_install:
+	DESTDIR=$(CURDIR)/debian/weston-rdp \
+	meson install -C build

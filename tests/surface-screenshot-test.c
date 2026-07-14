@@ -34,7 +34,7 @@
 #include <linux/input.h>
 
 #include <libweston/libweston.h>
-#include "compositor/weston.h"
+#include "frontend/weston.h"
 #include "shared/file-util.h"
 #include "libweston-internal.h"
 
@@ -177,8 +177,8 @@ trigger_binding(struct weston_keyboard *keyboard, const struct timespec *time,
 		return;
 	}
 
-	ret = weston_surface_copy_content(surface, pixels, sz, 0, 0, 0,
-					  0, 0, width, height, false, false);
+	ret = weston_surface_copy_content(surface, pixels, sz,
+					  0, 0, width, height);
 	if (ret < 0) {
 		weston_log("shooting surface %p failed\n", surface);
 		goto out;

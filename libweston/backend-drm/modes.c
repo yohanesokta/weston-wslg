@@ -1,7 +1,7 @@
 /*
  * Copyright © 2008-2011 Kristian Høgsberg
  * Copyright © 2011 Intel Corporation
- * Copyright © 2017, 2018 Collabora, Ltd.
+ * Copyright © 2017, 2018, 2024 Collabora, Ltd.
  * Copyright © 2017, 2018 General Electric Company
  * Copyright (c) 2018 DisplayLink (UK) Ltd.
  *
@@ -31,9 +31,36 @@
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <drm_fourcc.h>
+#include <libdisplay-info/info.h>
 
 #include "drm-internal.h"
+#include "shared/weston-drm-fourcc.h"
+#include "shared/xalloc.h"
+
+struct drm_head_info {
+	char *make; /* The monitor make (PNP ID or company name). */
+	char *model; /* The monitor model (product name). */
+	char *serial_number;
+
+	/* The monitor supported EOTF modes, combination of
+ 	 * enum weston_eotf_mode bits.
+	 */
+	uint32_t eotf_mask;
+
+	/* The monitor supported colorimetry modes, combination of
+	 * enum weston_colorimetry_mode bits.
+	 */
+	uint32_t colorimetry_mask;
+};
+
+static void
+drm_head_info_fini(struct drm_head_info *dhi)
+{
+	free(dhi->make);
+	free(dhi->model);
+	free(dhi->serial_number);
+	*dhi = (struct drm_head_info){};
+}
 
 static const char *const aspect_ratio_as_string[] = {
 	[WESTON_MODE_PIC_AR_NONE] = "",
@@ -98,14 +125,15 @@ drm_subpixel_to_wayland(int drm_value)
 }
 
 int
-drm_mode_ensure_blob(struct drm_backend *backend, struct drm_mode *mode)
+drm_mode_ensure_blob(struct drm_device *device, struct drm_mode *mode)
 {
+	struct drm_backend *backend = device->backend;
 	int ret;
 
 	if (mode->blob_id)
 		return 0;
 
-	ret = drmModeCreatePropertyBlob(backend->drm.fd,
+	ret = drmModeCreatePropertyBlob(device->drm.fd,
 					&mode->mode_info,
 					sizeof(mode->mode_info),
 					&mode->blob_id);
@@ -120,19 +148,19 @@ drm_mode_ensure_blob(struct drm_backend *backend, struct drm_mode *mode)
 }
 
 static bool
-check_non_desktop(struct drm_head *head, drmModeObjectPropertiesPtr props)
+check_non_desktop(struct drm_connector *connector, drmModeObjectPropertiesPtr props)
 {
 	struct drm_property_info *non_desktop_info =
-		&head->props_conn[WDRM_CONNECTOR_NON_DESKTOP];
+		&connector->props[WDRM_CONNECTOR_NON_DESKTOP];
 
 	return drm_property_get_value(non_desktop_info, props, 0);
 }
 
 static uint32_t
-get_panel_orientation(struct drm_head *head, drmModeObjectPropertiesPtr props)
+get_panel_orientation(struct drm_connector *connector, drmModeObjectPropertiesPtr props)
 {
 	struct drm_property_info *orientation =
-		&head->props_conn[WDRM_CONNECTOR_PANEL_ORIENTATION];
+		&connector->props[WDRM_CONNECTOR_PANEL_ORIENTATION];
 	uint64_t kms_val =
 		drm_property_get_value(orientation, props,
 				       WDRM_PANEL_ORIENTATION_NORMAL);
@@ -199,150 +227,208 @@ parse_modeline(const char *s, drmModeModeInfo *mode)
 	return 0;
 }
 
-static void
-edid_parse_string(const uint8_t *data, char text[])
+#ifdef HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY
+
+static uint32_t
+get_eotf_mask(const struct di_info *info)
 {
-	int i;
-	int replaced = 0;
+	const struct di_hdr_static_metadata *hdr_static;
+	uint32_t mask = 0;
 
-	/* this is always 12 bytes, but we can't guarantee it's null
-	 * terminated or not junk. */
-	strncpy(text, (const char *) data, 12);
+	hdr_static = di_info_get_hdr_static_metadata(info);
+	if (!hdr_static->type1)
+		return WESTON_EOTF_MODE_SDR;
 
-	/* guarantee our new string is null-terminated */
-	text[12] = '\0';
+	if (hdr_static->traditional_sdr)
+		mask |= WESTON_EOTF_MODE_SDR;
 
-	/* remove insane chars */
-	for (i = 0; text[i] != '\0'; i++) {
-		if (text[i] == '\n' ||
-		    text[i] == '\r') {
-			text[i] = '\0';
-			break;
-		}
-	}
+	if (hdr_static->traditional_hdr)
+		mask |= WESTON_EOTF_MODE_TRADITIONAL_HDR;
 
-	/* ensure string is printable */
-	for (i = 0; text[i] != '\0'; i++) {
-		if (!isprint(text[i])) {
-			text[i] = '-';
-			replaced++;
-		}
-	}
+	if (hdr_static->pq)
+		mask |= WESTON_EOTF_MODE_ST2084;
 
-	/* if the string is random junk, ignore the string */
-	if (replaced > 4)
-		text[0] = '\0';
+	if (hdr_static->hlg)
+		mask |= WESTON_EOTF_MODE_HLG;
+
+	return mask;
 }
 
-#define EDID_DESCRIPTOR_ALPHANUMERIC_DATA_STRING	0xfe
-#define EDID_DESCRIPTOR_DISPLAY_PRODUCT_NAME		0xfc
-#define EDID_DESCRIPTOR_DISPLAY_PRODUCT_SERIAL_NUMBER	0xff
-#define EDID_OFFSET_DATA_BLOCKS				0x36
-#define EDID_OFFSET_LAST_BLOCK				0x6c
-#define EDID_OFFSET_PNPID				0x08
-#define EDID_OFFSET_SERIAL				0x0c
-
-static int
-edid_parse(struct drm_edid *edid, const uint8_t *data, size_t length)
+static uint32_t
+get_colorimetry_mask(const struct di_info *info)
 {
-	int i;
-	uint32_t serial_number;
+	const struct di_supported_signal_colorimetry *ssc;
+	uint32_t mask = WESTON_COLORIMETRY_MODE_DEFAULT;
 
-	/* check header */
-	if (length < 128)
-		return -1;
-	if (data[0] != 0x00 || data[1] != 0xff)
-		return -1;
+	ssc = di_info_get_supported_signal_colorimetry(info);
+	if (!ssc)
+		return mask;
 
-	/* decode the PNP ID from three 5 bit words packed into 2 bytes
-	 * /--08--\/--09--\
-	 * 7654321076543210
-	 * |\---/\---/\---/
-	 * R  C1   C2   C3 */
-	edid->pnp_id[0] = 'A' + ((data[EDID_OFFSET_PNPID + 0] & 0x7c) / 4) - 1;
-	edid->pnp_id[1] = 'A' + ((data[EDID_OFFSET_PNPID + 0] & 0x3) * 8) + ((data[EDID_OFFSET_PNPID + 1] & 0xe0) / 32) - 1;
-	edid->pnp_id[2] = 'A' + (data[EDID_OFFSET_PNPID + 1] & 0x1f) - 1;
-	edid->pnp_id[3] = '\0';
+	if (ssc->bt2020_cycc)
+		mask |= WESTON_COLORIMETRY_MODE_BT2020_CYCC;
 
-	/* maybe there isn't a ASCII serial number descriptor, so use this instead */
-	serial_number = (uint32_t) data[EDID_OFFSET_SERIAL + 0];
-	serial_number += (uint32_t) data[EDID_OFFSET_SERIAL + 1] * 0x100;
-	serial_number += (uint32_t) data[EDID_OFFSET_SERIAL + 2] * 0x10000;
-	serial_number += (uint32_t) data[EDID_OFFSET_SERIAL + 3] * 0x1000000;
-	if (serial_number > 0)
-		sprintf(edid->serial_number, "%lu", (unsigned long) serial_number);
+	if (ssc->bt2020_rgb)
+		mask |= WESTON_COLORIMETRY_MODE_BT2020_RGB;
 
-	/* parse EDID data */
-	for (i = EDID_OFFSET_DATA_BLOCKS;
-	     i <= EDID_OFFSET_LAST_BLOCK;
-	     i += 18) {
-		/* ignore pixel clock data */
-		if (data[i] != 0)
-			continue;
-		if (data[i+2] != 0)
-			continue;
+	if (ssc->bt2020_ycc)
+		mask |= WESTON_COLORIMETRY_MODE_BT2020_YCC;
 
-		/* any useful blocks? */
-		if (data[i+3] == EDID_DESCRIPTOR_DISPLAY_PRODUCT_NAME) {
-			edid_parse_string(&data[i+5],
-					  edid->monitor_name);
-		} else if (data[i+3] == EDID_DESCRIPTOR_DISPLAY_PRODUCT_SERIAL_NUMBER) {
-			edid_parse_string(&data[i+5],
-					  edid->serial_number);
-		} else if (data[i+3] == EDID_DESCRIPTOR_ALPHANUMERIC_DATA_STRING) {
-			edid_parse_string(&data[i+5],
-					  edid->eisa_id);
-		}
+	if (ssc->st2113_rgb) {
+		mask |= WESTON_COLORIMETRY_MODE_P3D65;
+		mask |= WESTON_COLORIMETRY_MODE_P3DCI;
 	}
-	return 0;
+
+	if (ssc->ictcp)
+		mask |= WESTON_COLORIMETRY_MODE_ICTCP;
+
+	return mask;
 }
 
-/** Parse monitor make, model and serial from EDID
- *
- * \param head The head whose \c drm_edid to fill in.
- * \param props The DRM connector properties to get the EDID from.
- * \param[out] make The monitor make (PNP ID).
- * \param[out] model The monitor model (name).
- * \param[out] serial_number The monitor serial number.
- *
- * Each of \c *make, \c *model and \c *serial_number are set only if the
- * information is found in the EDID. The pointers they are set to must not
- * be free()'d explicitly, instead they get implicitly freed when the
- * \c drm_head is destroyed.
- */
-static void
-find_and_parse_output_edid(struct drm_head *head,
-			   drmModeObjectPropertiesPtr props,
-			   const char **make,
-			   const char **model,
-			   const char **serial_number)
+#else /* HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY */
+
+static uint32_t
+get_eotf_mask(const struct di_info *info)
 {
+	return WESTON_EOTF_MODE_SDR;
+}
+
+static uint32_t
+get_colorimetry_mask(const struct di_info *info)
+{
+	return WESTON_COLORIMETRY_MODE_DEFAULT;
+}
+
+#endif /* HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY */
+
+static struct di_info *
+drm_head_info_from_edid(struct drm_head_info *dhi,
+			const uint8_t *data,
+			size_t length)
+{
+	struct di_info *di_ctx;
+	const char *msg;
+
+	di_ctx = di_info_parse_edid(data, length);
+	if (!di_ctx) {
+		memset(dhi, 0, sizeof(*dhi));
+		dhi->eotf_mask = WESTON_EOTF_MODE_SDR;
+		dhi->colorimetry_mask = WESTON_COLORIMETRY_MODE_DEFAULT;
+		return NULL;
+	}
+
+	msg = di_info_get_failure_msg(di_ctx);
+	if (msg)
+		weston_log("DRM: EDID for the following head fails conformity:\n%s\n", msg);
+
+	dhi->make = di_info_get_make(di_ctx);
+	dhi->model = di_info_get_model(di_ctx);
+	dhi->serial_number = di_info_get_serial(di_ctx);
+	dhi->eotf_mask = get_eotf_mask(di_ctx);
+	dhi->colorimetry_mask = get_colorimetry_mask(di_ctx);
+
+	return di_ctx;
+}
+
+void
+drm_free_display_info(struct di_info **display_info)
+{
+	if (!*display_info)
+		return;
+
+	di_info_destroy(*display_info);
+	*display_info = NULL;
+}
+
+static void
+drm_head_set_display_data(struct drm_head *head, const void *data, size_t len)
+{
+	free(head->display_data);
+
+	if (!data || len == 0) {
+		head->display_data = NULL;
+		head->display_data_len = 0;
+		return;
+	}
+
+	head->display_data = xmalloc(len);
+	head->display_data_len = len;
+	memcpy(head->display_data, data, len);
+}
+
+static bool
+drm_head_maybe_update_display_data(struct drm_head *head,
+				   drmModeObjectPropertiesPtr props)
+{
+	struct drm_device *device = head->connector.device;
 	drmModePropertyBlobPtr edid_blob = NULL;
 	uint32_t blob_id;
-	int rc;
+	bool changed = false;
 
 	blob_id =
-		drm_property_get_value(&head->props_conn[WDRM_CONNECTOR_EDID],
-				       props, 0);
-	if (!blob_id)
-		return;
+		drm_property_get_value(
+			&head->connector.props[WDRM_CONNECTOR_EDID],
+			props, 0);
+	if (blob_id)
+		edid_blob = drmModeGetPropertyBlob(device->drm.fd, blob_id);
 
-	edid_blob = drmModeGetPropertyBlob(head->backend->drm.fd, blob_id);
-	if (!edid_blob)
-		return;
-
-	rc = edid_parse(&head->edid,
-			edid_blob->data,
-			edid_blob->length);
-	if (!rc) {
-		if (head->edid.pnp_id[0] != '\0')
-			*make = head->edid.pnp_id;
-		if (head->edid.monitor_name[0] != '\0')
-			*model = head->edid.monitor_name;
-		if (head->edid.serial_number[0] != '\0')
-			*serial_number = head->edid.serial_number;
+	if (edid_blob && edid_blob->length > 0) {
+		if (!head->display_data ||
+		    head->display_data_len != edid_blob->length ||
+		    memcmp(head->display_data, edid_blob->data, edid_blob->length)) {
+			drm_head_set_display_data(head, edid_blob->data, edid_blob->length);
+			changed = true;
+		}
+	} else {
+		if (head->display_data) {
+			drm_head_set_display_data(head, NULL, 0);
+			changed = true;
+		}
 	}
+
 	drmModeFreePropertyBlob(edid_blob);
+
+	return changed;
+}
+
+static void
+prune_eotf_modes_by_kms_support(struct drm_head *head, uint32_t *eotf_mask)
+{
+	const struct drm_property_info *info;
+
+	/* Without the KMS property, cannot do anything but SDR. */
+
+	info = &head->connector.props[WDRM_CONNECTOR_HDR_OUTPUT_METADATA];
+	if (!head->connector.device->atomic_modeset || info->prop_id == 0)
+		*eotf_mask = WESTON_EOTF_MODE_SDR;
+}
+
+static uint32_t
+drm_head_get_kms_colorimetry_modes(const struct drm_head *head)
+{
+	const struct drm_property_info *info;
+
+	/* Cannot bother implementing without atomic */
+	if (!head->connector.device->atomic_modeset)
+		return WESTON_COLORIMETRY_MODE_DEFAULT;
+
+	info = &head->connector.props[WDRM_CONNECTOR_COLORSPACE];
+	if (info->prop_id == 0)
+		return WESTON_COLORIMETRY_MODE_DEFAULT;
+
+	uint32_t colorimetry_modes = WESTON_COLORIMETRY_MODE_NONE;
+	unsigned i; /* actually enum wdrm_colorspace */
+
+	for (i = 0; i < WDRM_COLORSPACE__COUNT; i++) {
+		if (info->enum_values[i].valid) {
+			const struct weston_colorimetry_mode_info *cm;
+
+			cm = weston_colorimetry_mode_info_get_by_wdrm(i);
+			if (cm)
+				colorimetry_modes |= cm->mode;
+		}
+	}
+
+	return colorimetry_modes;
 }
 
 static uint32_t
@@ -405,26 +491,26 @@ drm_output_add_mode(struct drm_output *output, const drmModeModeInfo *info)
  * Destroys a mode, and removes it from the list.
  */
 static void
-drm_output_destroy_mode(struct drm_backend *backend, struct drm_mode *mode)
+drm_output_destroy_mode(struct drm_device *device, struct drm_mode *mode)
 {
 	if (mode->blob_id)
-		drmModeDestroyPropertyBlob(backend->drm.fd, mode->blob_id);
+		drmModeDestroyPropertyBlob(device->drm.fd, mode->blob_id);
 	wl_list_remove(&mode->base.link);
 	free(mode);
 }
 
 /** Destroy a list of drm_modes
  *
- * @param backend The backend for releasing mode property blobs.
+ * @param device The device for releasing mode property blobs.
  * @param mode_list The list linked by drm_mode::base.link.
  */
 void
-drm_mode_list_destroy(struct drm_backend *backend, struct wl_list *mode_list)
+drm_mode_list_destroy(struct drm_device *device, struct wl_list *mode_list)
 {
 	struct drm_mode *mode, *next;
 
 	wl_list_for_each_safe(mode, next, mode_list, base.link)
-		drm_output_destroy_mode(backend, mode);
+		drm_output_destroy_mode(device, mode);
 }
 
 void
@@ -438,8 +524,8 @@ drm_output_print_modes(struct drm_output *output)
 		dm = to_drm_mode(m);
 
 		aspect_ratio = aspect_ratio_to_string(m->aspect_ratio);
-		weston_log_continue(STAMP_SPACE "%dx%d@%.1f%s%s%s, %.1f MHz\n",
-				    m->width, m->height, m->refresh / 1000.0,
+		weston_log_continue(STAMP_SPACE "%s@%.1f%s%s%s, %.1f MHz\n",
+				    dm->mode_info.name, m->refresh / 1000.0,
 				    aspect_ratio,
 				    m->flags & WL_OUTPUT_MODE_PREFERRED ?
 				    ", preferred" : "",
@@ -465,30 +551,32 @@ struct drm_mode *
 drm_output_choose_mode(struct drm_output *output,
 		       struct weston_mode *target_mode)
 {
-	struct drm_mode *tmp_mode = NULL, *mode_fall_back = NULL, *mode;
+	struct drm_mode *tmp_mode = NULL, *mode_fall_back = NULL, *mode, *tmode;
 	enum weston_mode_aspect_ratio src_aspect = WESTON_MODE_PIC_AR_NONE;
 	enum weston_mode_aspect_ratio target_aspect = WESTON_MODE_PIC_AR_NONE;
-	struct drm_backend *b;
+	struct drm_device *device;
 
-	b = to_drm_backend(output->base.compositor);
+	mode = to_drm_mode(output->base.current_mode);
+	tmode = to_drm_mode(target_mode);
+
+	device = output->device;
+
 	target_aspect = target_mode->aspect_ratio;
 	src_aspect = output->base.current_mode->aspect_ratio;
-	if (output->base.current_mode->width == target_mode->width &&
-	    output->base.current_mode->height == target_mode->height &&
+	if (!strcmp(mode->mode_info.name, tmode->mode_info.name) &&
 	    (output->base.current_mode->refresh == target_mode->refresh ||
 	     target_mode->refresh == 0)) {
-		if (!b->aspect_ratio_supported || src_aspect == target_aspect)
+		if (!device->aspect_ratio_supported || src_aspect == target_aspect)
 			return to_drm_mode(output->base.current_mode);
 	}
 
 	wl_list_for_each(mode, &output->base.mode_list, base.link) {
 
 		src_aspect = mode->base.aspect_ratio;
-		if (mode->mode_info.hdisplay == target_mode->width &&
-		    mode->mode_info.vdisplay == target_mode->height) {
+		if (!strcmp(mode->mode_info.name, tmode->mode_info.name)) {
 			if (mode->base.refresh == target_mode->refresh ||
 			    target_mode->refresh == 0) {
-				if (!b->aspect_ratio_supported ||
+				if (!device->aspect_ratio_supported ||
 				    src_aspect == target_aspect)
 					return mode;
 				else if (!mode_fall_back)
@@ -506,29 +594,48 @@ drm_output_choose_mode(struct drm_output *output,
 }
 
 void
-update_head_from_connector(struct drm_head *head,
-			   drmModeObjectProperties *props)
+update_head_from_connector(struct drm_head *head)
 {
-	const char *make = "unknown";
-	const char *model = "unknown";
-	const char *serial_number = "unknown";
+	struct drm_connector *connector = &head->connector;
+	drmModeObjectProperties *props = connector->props_drm;
+	drmModeConnector *conn = connector->conn;
 
-	find_and_parse_output_edid(head, props, &make, &model, &serial_number);
-	weston_head_set_monitor_strings(&head->base, make, model, serial_number);
 	weston_head_set_non_desktop(&head->base,
-				    check_non_desktop(head, props));
+				    check_non_desktop(connector, props));
 	weston_head_set_subpixel(&head->base,
-		drm_subpixel_to_wayland(head->connector->subpixel));
+				 drm_subpixel_to_wayland(conn->subpixel));
 
-	weston_head_set_physical_size(&head->base, head->connector->mmWidth,
-				      head->connector->mmHeight);
+	weston_head_set_physical_size(&head->base, conn->mmWidth, conn->mmHeight);
 
 	weston_head_set_transform(&head->base,
-				  get_panel_orientation(head, props));
+				  get_panel_orientation(connector, props));
 
 	/* Unknown connection status is assumed disconnected. */
 	weston_head_set_connection_status(&head->base,
-			head->connector->connection == DRM_MODE_CONNECTED);
+				conn->connection == DRM_MODE_CONNECTED);
+
+	/* If EDID did not change, skip everything about it */
+	if (!drm_head_maybe_update_display_data(head, props))
+		return;
+
+	struct drm_head_info dhi;
+
+	drm_free_display_info(&head->base.display_info);
+	head->base.display_info = drm_head_info_from_edid(&dhi, head->display_data,
+							  head->display_data_len);
+	weston_head_set_device_changed(&head->base);
+
+	weston_head_set_monitor_strings(&head->base, dhi.make,
+					dhi.model,
+					dhi.serial_number);
+
+	prune_eotf_modes_by_kms_support(head, &dhi.eotf_mask);
+	weston_head_set_supported_eotf_mask(&head->base, dhi.eotf_mask);
+
+	dhi.colorimetry_mask &= drm_head_get_kms_colorimetry_modes(head);
+	weston_head_set_supported_colorimetry_mask(&head->base, dhi.colorimetry_mask);
+
+	drm_head_info_fini(&dhi);
 }
 
 /**
@@ -537,7 +644,7 @@ update_head_from_connector(struct drm_head *head,
  * Find the most suitable mode to use for initial setup (or reconfiguration on
  * hotplug etc) for a DRM output.
  *
- * @param backend the DRM backend
+ * @param device the DRM device
  * @param output DRM output to choose mode for
  * @param mode Strategy and preference to use when choosing mode
  * @param modeline Manually-entered mode (may be NULL)
@@ -545,7 +652,7 @@ update_head_from_connector(struct drm_head *head,
  * @returns A mode from the output's mode list, or NULL if none available
  */
 static struct drm_mode *
-drm_output_choose_initial_mode(struct drm_backend *backend,
+drm_output_choose_initial_mode(struct drm_device *device,
 			       struct drm_output *output,
 			       enum weston_drm_backend_output_mode mode,
 			       const char *modeline,
@@ -558,6 +665,7 @@ drm_output_choose_initial_mode(struct drm_backend *backend,
 	struct drm_mode *best = NULL;
 	struct drm_mode *drm_mode;
 	drmModeModeInfo drm_modeline;
+	char name[16] = "\0";
 	int32_t width = 0;
 	int32_t height = 0;
 	uint32_t refresh = 0;
@@ -567,9 +675,11 @@ drm_output_choose_initial_mode(struct drm_backend *backend,
 	int n;
 
 	if (mode == WESTON_DRM_BACKEND_OUTPUT_PREFERRED && modeline) {
-		n = sscanf(modeline, "%dx%d@%d %u:%u", &width, &height,
+		sscanf(modeline, "%12[^@pP]", name);
+
+		n = sscanf(modeline, "%dx%d%*[^0-9]%d %u:%u", &width, &height,
 			   &refresh, &aspect_width, &aspect_height);
-		if (backend->aspect_ratio_supported && n == 5) {
+		if (device->aspect_ratio_supported && n == 5) {
 			if (aspect_width == 4 && aspect_height == 3)
 				aspect_ratio = WESTON_MODE_PIC_AR_4_3;
 			else if (aspect_width == 16 && aspect_height == 9)
@@ -597,10 +707,9 @@ drm_output_choose_initial_mode(struct drm_backend *backend,
 	}
 
 	wl_list_for_each_reverse(drm_mode, &output->base.mode_list, base.link) {
-		if (width == drm_mode->base.width &&
-		    height == drm_mode->base.height &&
+		if (!strcmp(name, drm_mode->mode_info.name) &&
 		    (refresh == 0 || refresh == drm_mode->mode_info.vrefresh)) {
-			if (!backend->aspect_ratio_supported ||
+			if (!device->aspect_ratio_supported ||
 			    aspect_ratio == drm_mode->base.aspect_ratio)
 				configured = drm_mode;
 			else
@@ -712,7 +821,7 @@ drm_output_try_add_mode(struct drm_output *output, const drmModeModeInfo *info)
 {
 	struct weston_mode *base;
 	struct drm_mode *mode = NULL;
-	struct drm_backend *backend;
+	struct drm_device *device = output->device;
 	const drmModeModeInfo *chosen = NULL;
 
 	assert(info);
@@ -726,8 +835,7 @@ drm_output_try_add_mode(struct drm_output *output, const drmModeModeInfo *info)
 
 	if (chosen == info) {
 		assert(mode);
-		backend = to_drm_backend(output->base.compositor);
-		drm_output_destroy_mode(backend, mode);
+		drm_output_destroy_mode(device, mode);
 		chosen = NULL;
 	}
 
@@ -754,21 +862,22 @@ drm_output_try_add_mode(struct drm_output *output, const drmModeModeInfo *info)
 static int
 drm_output_update_modelist_from_heads(struct drm_output *output)
 {
-	struct drm_backend *backend = to_drm_backend(output->base.compositor);
+	struct drm_device *device = output->device;
 	struct weston_head *head_base;
 	struct drm_head *head;
+	drmModeConnector *conn;
 	int i;
 	int ret;
 
 	assert(!output->base.enabled);
 
-	drm_mode_list_destroy(backend, &output->base.mode_list);
+	drm_mode_list_destroy(device, &output->base.mode_list);
 
 	wl_list_for_each(head_base, &output->base.head_list, output_link) {
 		head = to_drm_head(head_base);
-		for (i = 0; i < head->connector->count_modes; i++) {
-			ret = drm_output_try_add_mode(output,
-						&head->connector->modes[i]);
+		conn = head->connector.conn;
+		for (i = 0; i < conn->count_modes; i++) {
+			ret = drm_output_try_add_mode(output, &conn->modes[i]);
 			if (ret < 0)
 				return -1;
 		}
@@ -783,18 +892,18 @@ drm_output_set_mode(struct weston_output *base,
 		    const char *modeline)
 {
 	struct drm_output *output = to_drm_output(base);
-	struct drm_backend *b = to_drm_backend(base->compositor);
+	struct drm_device *device = output->device;
 	struct drm_head *head = to_drm_head(weston_output_get_first_head(base));
 
 	struct drm_mode *current;
 
-	if (output->virtual)
+	if (output->is_virtual)
 		return -1;
 
 	if (drm_output_update_modelist_from_heads(output) < 0)
 		return -1;
 
-	current = drm_output_choose_initial_mode(b, output, mode, modeline,
+	current = drm_output_choose_initial_mode(device, output, mode, modeline,
 						 &head->inherited_mode);
 	if (!current)
 		return -1;
@@ -803,7 +912,7 @@ drm_output_set_mode(struct weston_output *base,
 	output->base.current_mode->flags |= WL_OUTPUT_MODE_CURRENT;
 
 	/* Set native_ fields, so weston_output_mode_switch_to_native() works */
-	output->base.native_mode = output->base.current_mode;
+	weston_output_copy_native_mode(&output->base, output->base.current_mode);
 	output->base.native_scale = output->base.current_scale;
 
 	return 0;

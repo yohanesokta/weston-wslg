@@ -39,6 +39,8 @@ fixture_setup(struct weston_test_harness *harness)
 	struct compositor_setup setup;
 
 	compositor_setup_defaults(&setup);
+	setup.shell = SHELL_DESKTOP;
+	setup.refresh = HIGHEST_OUTPUT_REFRESH;
 
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
@@ -231,4 +233,8 @@ TEST(text_test)
 	weston_test_activate_surface(client->test->weston_test, NULL);
 	client_roundtrip(client);
 	assert(state.activated == 2 && state.deactivated == 2);
+
+	zwp_text_input_v1_destroy(text_input);
+	zwp_text_input_manager_v1_destroy(factory);
+	client_destroy(client);
 }

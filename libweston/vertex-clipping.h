@@ -25,42 +25,57 @@
 #ifndef _WESTON_VERTEX_CLIPPING_H
 #define _WESTON_VERTEX_CLIPPING_H
 
-struct polygon8 {
-	float x[8];
-	float y[8];
-	int n;
+#include <stddef.h>
+#include <stdbool.h>
+#include <pixman.h>
+
+struct clipper_vertex {
+	float x, y;
 };
 
-struct clip_context {
-	struct {
-		float x;
-		float y;
-	} prev;
-
-	struct {
-		float x1, y1;
-		float x2, y2;
-	} clip;
-
-	struct {
-		float *x;
-		float *y;
-	} vertices;
+struct clipper_quad {
+	struct clipper_vertex polygon[4];
+	struct clipper_vertex bbox[2];    /* Valid if !axis_aligned. */
+	bool axis_aligned;
 };
+
+/*
+ * Initialize a 'quad' clipping context. 'polygon' points to an array of 4
+ * vertices defining a convex quadrilateral of any winding order. Call
+ * 'clipper_quad_clip()' to clip an initialized 'quad' to a clipping box.
+ * Clipping is faster if 'polygon' is an axis-aligned rectangle with edges
+ * parallel to the axes of the coordinate space. 'axis_aligned' indicates
+ * whether 'polygon' respects the conditions above.
+ */
+void
+clipper_quad_init(struct clipper_quad *quad,
+		  const struct clipper_vertex polygon[4],
+		  bool axis_aligned);
+
+/*
+ * Compute the boundary vertices of the intersection of a convex quadrilateral
+ * stored into a 'quad' clipping context and a clipping 'box'. 'box' points to
+ * an array of 2 vertices where the values of the 1st vertex are less than or
+ * equal to the values of the 2nd vertex. Either 0 or [3, 8] resulting vertices,
+ * with the same winding order than the 'polygon' passed to
+ * 'clipper_quad_init()', are written to 'vertices'. The return value is the
+ * number of vertices created.
+ */
+int
+clipper_quad_clip(struct clipper_quad *quad,
+		  const struct clipper_vertex box[2],
+		  struct clipper_vertex *restrict vertices);
+
+/*
+ * Utility function calling 'clipper_quad_clip()' but taking a pixman_box32
+ * pointer as clipping box.
+ */
+int
+clipper_quad_clip_box32(struct clipper_quad *quad,
+			const struct pixman_box32 *box,
+			struct clipper_vertex *restrict vertices);
 
 float
-float_difference(float a, float b);
-
-int
-clip_simple(struct clip_context *ctx,
-	    struct polygon8 *surf,
-	    float *ex,
-	    float *ey);
-
-int
-clip_transformed(struct clip_context *ctx,
-		 struct polygon8 *surf,
-		 float *ex,
-		 float *ey);\
+clipper_float_difference(float a, float b);
 
 #endif

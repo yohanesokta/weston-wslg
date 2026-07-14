@@ -41,7 +41,6 @@
 #include "shared/os-compatibility.h"
 #include <libweston/zalloc.h>
 #include "xdg-shell-client-protocol.h"
-#include "fullscreen-shell-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 
 int print_debug = 0;
@@ -53,7 +52,6 @@ struct display {
 	struct wl_compositor *compositor;
 	struct wp_viewporter *viewporter;
 	struct xdg_wm_base *wm_base;
-	struct zwp_fullscreen_shell_v1 *fshell;
 	struct wl_shm *shm;
 	uint32_t formats;
 };
@@ -337,14 +335,11 @@ create_window(struct display *display, int width, int height,
 					  &xdg_toplevel_listener, window);
 
 		xdg_toplevel_set_title(window->xdg_toplevel, "simple-damage");
+		xdg_toplevel_set_app_id(window->xdg_toplevel,
+					"org.freedesktop.weston.simple-damage");
 
 		window->wait_for_configure = true;
 		wl_surface_commit(window->surface);
-	} else if (display->fshell) {
-		zwp_fullscreen_shell_v1_present_surface(display->fshell,
-							window->surface,
-							ZWP_FULLSCREEN_SHELL_V1_PRESENT_METHOD_DEFAULT,
-							NULL);
 	} else {
 		assert(0);
 	}
@@ -501,6 +496,20 @@ window_get_transformed_ball(struct window *window, float *bx, float *by)
 }
 
 static const struct wl_callback_listener frame_listener;
+
+static void
+set_opaque_region(struct window *window)
+{
+	struct wl_region *region;
+
+	region = wl_compositor_create_region(window->display->compositor);
+	wl_region_add(region, 0, 0, window->width, window->height);
+	wl_region_subtract(region, window->border, window->border,
+			   window->width - 2 * window->border,
+			   window->height - 2 * window->border);
+	wl_surface_set_opaque_region(window->surface, region);
+	wl_region_destroy(region);
+}
 
 static void
 redraw(void *data, struct wl_callback *callback, uint32_t time)
@@ -689,6 +698,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	if (callback)
 		wl_callback_destroy(callback);
 
+	set_opaque_region(window);
+
 	window->callback = wl_surface_frame(window->surface);
 	wl_callback_add_listener(window->callback, &frame_listener, window);
 	wl_surface_commit(window->surface);
@@ -748,9 +759,6 @@ registry_handle_global(void *data, struct wl_registry *registry,
 		d->wm_base = wl_registry_bind(registry,
 					      id, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(d->wm_base, &wm_base_listener, d);
-	} else if (strcmp(interface, "zwp_fullscreen_shell_v1") == 0) {
-		d->fshell = wl_registry_bind(registry,
-					     id, &zwp_fullscreen_shell_v1_interface, 1);
 	} else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = wl_registry_bind(registry,
 					  id, &wl_shm_interface, 1);
@@ -774,7 +782,7 @@ create_display(int version)
 {
 	struct display *display;
 
-	display = malloc(sizeof *display);
+	display = zalloc(sizeof *display);
 	if (display == NULL) {
 		fprintf(stderr, "out of memory\n");
 		exit(1);
@@ -811,9 +819,6 @@ destroy_display(struct display *display)
 
 	if (display->wm_base)
 		xdg_wm_base_destroy(display->wm_base);
-
-	if (display->fshell)
-		zwp_fullscreen_shell_v1_release(display->fshell);
 
 	if (display->viewporter)
 		wp_viewporter_destroy(display->viewporter);
@@ -949,7 +954,7 @@ main(int argc, char **argv)
 	while (running && ret != -1)
 		ret = wl_display_dispatch(display->display);
 
-	fprintf(stderr, "simple-shm exiting\n");
+	fprintf(stderr, "simple-damage exiting\n");
 	destroy_window(window);
 	destroy_display(display);
 

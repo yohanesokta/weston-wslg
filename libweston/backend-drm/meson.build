@@ -2,6 +2,20 @@ if not get_option('backend-drm')
 	subdir_done()
 endif
 
+dep_libdisplay_info = dependency(
+	'libdisplay-info',
+	version: ['>= 0.1.1', '< 0.3.0'],
+	fallback: ['display-info', 'di_dep'],
+	default_options: [
+		'werror=false',
+	],
+	required: true,
+	not_found_message: 'Required by DRM-backend.',
+)
+if dep_libdisplay_info.version().version_compare('>= 0.2.0')
+	config_h.set('HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY', '1')
+endif
+
 lib_backlight = static_library(
 	'backlight',
 	'libbacklight.c',
@@ -24,6 +38,7 @@ srcs_drm = [
 	'fb.c',
 	'modes.c',
 	'kms.c',
+	'kms-color.c',
 	'state-helpers.c',
 	'state-propose.c',
 	linux_dmabuf_unstable_v1_protocol_c,
@@ -32,25 +47,22 @@ srcs_drm = [
 ]
 
 deps_drm = [
+	dep_egl, # optional
+	dep_libm,
 	dep_libdl,
+	dep_libshared,
 	dep_libweston_private,
 	dep_session_helper,
 	dep_libdrm,
 	dep_libinput_backend,
 	dependency('libudev', version: '>= 136'),
+	dep_libdisplay_info,
 	dep_backlight
 ]
 
 if get_option('renderer-gl')
-	dep_gbm = dependency('gbm', required: false)
 	if not dep_gbm.found()
 		error('drm-backend with GL renderer requires gbm which was not found. Or, you can use \'-Drenderer-gl=false\'.')
-	endif
-	if dep_gbm.version().version_compare('>= 17.1')
-		config_h.set('HAVE_GBM_MODIFIERS', '1')
-	endif
-	if dep_gbm.version().version_compare('>= 17.2')
-		config_h.set('HAVE_GBM_FD_IMPORT', '1')
 	endif
 	deps_drm += dep_gbm
 	srcs_drm += 'drm-gbm.c'
