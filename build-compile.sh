@@ -36,6 +36,7 @@ sudo apt-get install -y \
     libinput-dev \
     libevdev-dev \
     libdrm-dev \
+    libgbm-dev \
     libjpeg-dev \
     libwebp-dev \
     libpng-dev \
@@ -179,13 +180,23 @@ echo "[+] Create archive"
 
 tar -czf weston-rdp-14.0.0.tar.gz staging install.sh
 
+echo "[+] Creating Debian package (.deb)..."
+
+rm -rf debian/octaweston/usr
+cp -a staging/usr debian/octaweston/usr
+dpkg-deb --build debian/octaweston
+mv debian/octaweston.deb ./octaweston_14.0.0-1_amd64.deb
+
 echo
 echo "=================================="
 echo " DONE"
 echo "=================================="
 echo
-echo "Archive:"
-echo "$OUTPUT"
+echo "Tarball Archive:"
+echo "  weston-rdp-14.0.0.tar.gz"
 echo
-echo "Build:"
-echo "build/"
+echo "Debian Package (.deb):"
+echo "  octaweston_14.0.0-1_amd64.deb"
+echo
+echo "Build Directory:"
+echo "  build/"
